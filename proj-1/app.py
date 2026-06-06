@@ -15,13 +15,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Dynamically calculate the absolute path of the directory containing app.py
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-MODEL_PATH = os.path.join(BASE_DIR, "attention_model.keras")
-ENCODER_PATH = os.path.join(BASE_DIR, "label_encoder.pkl")
-TOKENIZER_PATH = os.path.join(BASE_DIR, "tokenizer.pkl") 
-
 # =====================================================
 # HEADER
 # =====================================================
@@ -29,55 +22,58 @@ st.title("🚨 Deep Learning Fraud Detection Dashboard")
 st.markdown("Upload transaction data and predict fraud probabilities.")
 
 # =====================================================
-# DEBUG INFORMATION (Sidebar)
+# SYSTEM PATH RESOLVER
 # =====================================================
-with st.sidebar:
-    st.subheader("System Information")
-    st.write(f"**Root Dir:** `{BASE_DIR}`")
+# This function searches the entire project directory to find where your files are hidden
+def find_file_path(filename):
+    search_root = os.path.dirname(os.path.abspath(__file__))
+    # First, look in the main folder
+    direct_path = os.path.join(search_root, filename)
+    if os.path.exists(direct_path):
+        return direct_path
     
-    # This reads files in the same folder as app.py to help verify if they exist
-    try:
-        available_files = os.listdir(BASE_DIR)
-        st.write("**Available Files in App Folder:**")
-        st.code(available_files)
-    except Exception:
-        pass
+    # Second, scan subdirectories (like proj-1, etc.)
+    for root, dirs, files in os.walk(search_root):
+        if filename in files:
+            return os.path.join(root, filename)
+    return None
 
 # =====================================================
-# ARTIFACTS LOADING (Line 71 Fix)
+# ARTIFACTS LOADING (Aggressive Path Fixes)
 # =====================================================
 @st.cache_resource
 def load_artifacts():
-    # 1. Load Keras Model safely using absolute path
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"Model file missing at: {MODEL_PATH}")
-    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+    # Find files dynamically wherever they are in your GitHub repo
+    model_path = find_file_path("attention_model.keras")
+    encoder_path = find_file_path("label_encoder.pkl")
+    tokenizer_path = find_file_path("tokenizer.pkl")
+
+    # 1. Load Keras Model
+    if not model_path:
+        raise FileNotFoundError("attention_model.keras could not be found anywhere in the repository structure.")
+    model = tf.keras.models.load_model(model_path, compile=False)
     
-    # 2. Load Label Encoder safely using absolute path
-    if not os.path.exists(ENCODER_PATH):
-        raise FileNotFoundError(f"Label encoder file missing at: {ENCODER_PATH}")
-    with open(ENCODER_PATH, "rb") as f:
+    # 2. Load Label Encoder
+    if not encoder_path:
+        raise FileNotFoundError("label_encoder.pkl could not be found anywhere in the repository structure.")
+    with open(encoder_path, "rb") as f:
         label_encoder = pickle.load(f)
         
-    # 3. Load Tokenizer safely using absolute path (if it exists)
+    # 3. Load Tokenizer (Returns None if not used/found)
     tokenizer = None
-    if os.path.exists(TOKENIZER_PATH):
-        with open(TOKENIZER_PATH, "rb") as f:
+    if tokenizer_path:
+        with open(tokenizer_path, "rb") as f:
             tokenizer = pickle.load(f)
-    else:
-        # If your tokenizer is inside another file or structured differently, 
-        # add your custom fallback loading logic here.
-        pass
     
     return model, tokenizer, label_encoder
 
-# Try block matches your expected structure: model, tokenizer, label_encoder = load_artifacts()
+# Try block execution matching your core design
 try:
     model, tokenizer, label_encoder = load_artifacts()
     st.sidebar.success("All Artifacts Loaded Successfully!")
 except Exception as e:
-    st.error(f"Critical Loading Error: {e}")
-    st.info("Please make sure your .keras and .pkl files are committed and pushed to GitHub in the same folder as your app.py file.")
+    st.error(f"Critical Deployment Error: {e}")
+    st.info("Check your GitHub repository to ensure 'attention_model.keras' and 'label_encoder.pkl' are fully uploaded.")
     st.stop()
 
 # =====================================================
@@ -96,7 +92,6 @@ if uploaded_file is not None:
 
         # Extract numeric features
         numeric_df = df.select_dtypes(include=[np.number])
-        
         if numeric_df.empty:
             st.error("Dataset contains no numeric columns for prediction.")
             st.stop()
@@ -110,7 +105,6 @@ if uploaded_file is not None:
             st.error(f"Feature Mismatch: Model requires {expected_features} features, but CSV only has {numeric_df.shape[1]} numeric columns.")
             st.stop()
         
-        # Take up to the expected count of numeric attributes
         input_data = numeric_df.iloc[:, :expected_features].values
 
         if len(input_data) < sequence_length:
@@ -121,7 +115,6 @@ if uploaded_file is not None:
         X = []
         for i in range(len(input_data) - sequence_length + 1):
             X.append(input_data[i : i + sequence_length])
-        
         X = np.array(X)
 
         # Run Predictions
@@ -148,12 +141,10 @@ if uploaded_file is not None:
         m3.metric("Mean Fraud Score", f"{results['Fraud_Probability'].mean():.4f}")
 
         c1, c2 = st.columns(2)
-        
         with c1:
             st.subheader("Trend Analytics")
             fig_trend = px.line(results, y="Fraud_Probability", color_discrete_sequence=['#ff4b4b'])
             st.plotly_chart(fig_trend, use_container_width=True)
-            
         with c2:
             st.subheader("Risk Segmentation Breakdown")
             fig_pie = px.pie(results, names="Risk_Level", hole=0.4,
@@ -170,6 +161,5 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"An unexpected data processing error occurred: {e}")
         st.exception(e)
-
 else:
     st.info("👋 Systems Online. Please upload a valid CSV transaction dataset to evaluate metrics.")
