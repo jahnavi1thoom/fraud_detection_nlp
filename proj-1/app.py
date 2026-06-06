@@ -24,56 +24,46 @@ st.markdown("Upload transaction data and predict fraud probabilities.")
 # =====================================================
 # SYSTEM PATH RESOLVER
 # =====================================================
-# This function searches the entire project directory to find where your files are hidden
 def find_file_path(filename):
     search_root = os.path.dirname(os.path.abspath(__file__))
-    # First, look in the main folder
     direct_path = os.path.join(search_root, filename)
     if os.path.exists(direct_path):
         return direct_path
     
-    # Second, scan subdirectories (like proj-1, etc.)
     for root, dirs, files in os.walk(search_root):
         if filename in files:
             return os.path.join(root, filename)
     return None
 
 # =====================================================
-# ARTIFACTS LOADING (Aggressive Path Fixes)
+# ARTIFACTS LOADING (Cleaned)
 # =====================================================
 @st.cache_resource
 def load_artifacts():
-    # Find files dynamically wherever they are in your GitHub repo
     model_path = find_file_path("attention_model.keras")
-    encoder_path = find_file_path("label_encoder.pkl")
     tokenizer_path = find_file_path("tokenizer.pkl")
 
     # 1. Load Keras Model
     if not model_path:
         raise FileNotFoundError("attention_model.keras could not be found anywhere in the repository structure.")
     model = tf.keras.models.load_model(model_path, compile=False)
-    
-    # 2. Load Label Encoder
-    if not encoder_path:
-        raise FileNotFoundError("label_encoder.pkl could not be found anywhere in the repository structure.")
-    with open(encoder_path, "rb") as f:
-        label_encoder = pickle.load(f)
         
-    # 3. Load Tokenizer (Returns None if not used/found)
+    # 2. Load Tokenizer (Optional fallback if not found)
     tokenizer = None
     if tokenizer_path:
         with open(tokenizer_path, "rb") as f:
             tokenizer = pickle.load(f)
     
-    return model, tokenizer, label_encoder
+    # Returning only model and tokenizer now
+    return model, tokenizer
 
-# Try block execution matching your core design
+# Unpacking modified to remove label_encoder
 try:
-    model, tokenizer, label_encoder = load_artifacts()
-    st.sidebar.success("All Artifacts Loaded Successfully!")
+    model, tokenizer = load_artifacts()
+    st.sidebar.success("Model & Tokenizer Loaded Successfully!")
 except Exception as e:
     st.error(f"Critical Deployment Error: {e}")
-    st.info("Check your GitHub repository to ensure 'attention_model.keras' and 'label_encoder.pkl' are fully uploaded.")
+    st.info("Check your GitHub repository to ensure 'attention_model.keras' is fully uploaded inside your project folder.")
     st.stop()
 
 # =====================================================
