@@ -4,237 +4,164 @@ import numpy as np
 import tensorflow as tf
 import os
 import plotly.express as px
+import pickle
 
 # =====================================================
 # PAGE CONFIG
 # =====================================================
-
 st.set_page_config(
     page_title="Fraud Intelligence Dashboard",
     page_icon="🚨",
     layout="wide"
 )
 
+# Dynamic pathing based on current file location
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "attention_model.keras")
+ENCODER_PATH = os.path.join(BASE_DIR, "label_encoder.pkl")
+# If you have a tokenizer pickle file, define its path here:
+TOKENIZER_PATH = os.path.join(BASE_DIR, "tokenizer.pkl") 
+
 # =====================================================
 # HEADER
 # =====================================================
-
 st.title("🚨 Deep Learning Fraud Detection Dashboard")
 st.markdown("Upload transaction data and predict fraud probabilities.")
 
 # =====================================================
-# PATH RESOLUTION & DEBUG INFORMATION
+# DEBUG INFORMATION (Sidebar)
 # =====================================================
-
-# Get the absolute path of the directory containing this script (app.py)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "attention_model.keras")
-
-st.sidebar.subheader("System Information")
-st.sidebar.write("Current Working Directory:")
-st.sidebar.code(os.getcwd())
-
-st.sidebar.write("App Script Directory:")
-st.sidebar.code(BASE_DIR)
-
-try:
+with st.sidebar:
+    st.subheader("System Information")
+    st.write(f"**Root Dir:** `{BASE_DIR}`")
+    
     available_files = os.listdir(BASE_DIR)
-    st.sidebar.write("Available Files in App Directory:")
-    st.sidebar.write(available_files)
-except Exception as e:
-    st.sidebar.error(f"Could not list directory: {e}")
+    st.write("**Available Files in Repository:**")
+    st.code(available_files)
 
 # =====================================================
-# MODEL LOADING
+# ARTIFACTS LOADING
 # =====================================================
-
 @st.cache_resource
-def load_model():
+def load_artifacts():
+    # 1. Validate and Load Model
     if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(
-            f"Model not found. Looked for '{MODEL_PATH}' but it does not exist."
-        )
-
-    model = tf.keras.models.load_model(
-        MODEL_PATH,
-        compile=False
-    )
-    return model
+        raise FileNotFoundError(f"Model file missing. Looked for: {MODEL_PATH}")
+    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+    
+    # 2. Validate and Load Label Encoder
+    if not os.path.exists(ENCODER_PATH):
+        raise FileNotFoundError(f"Label encoder file missing. Looked for: {ENCODER_PATH}")
+    with open(ENCODER_PATH, "rb") as f:
+        label_encoder = pickle.load(f)
+        
+    # 3. Validate and Load Tokenizer (Optional/Required based on your architecture)
+    tokenizer = None
+    if os.path.exists(TOKENIZER_PATH):
+        with open(TOKENIZER_PATH, "rb") as f:
+            tokenizer = pickle.load(f)
+    
+    return model, tokenizer, label_encoder
 
 try:
-    model = load_model()
-    st.sidebar.success("Model Loaded Successfully")
+    model, tokenizer, label_encoder = load_artifacts()
+    st.sidebar.success("All Artifacts Loaded Successfully!")
 except Exception as e:
-    st.sidebar.error(f"Model Loading Error: {e}")
-    st.error(f"CRITICAL ERROR: Failed to load the deep learning model. {e}")
+    st.error(f"Critical Loading Error: {e}")
+    st.info("Please verify that 'attention_model.keras' and 'label_encoder.pkl' are uploaded directly into your repository folder.")
     st.stop()
 
 # =====================================================
 # FILE UPLOAD
 # =====================================================
-
-uploaded_file = st.file_uploader(
-    "Upload CSV File",
-    type=["csv"]
-)
+uploaded_file = st.file_uploader("Upload CSV File for Analysis", type=["csv"])
 
 # =====================================================
-# MAIN APP
+# MAIN APP LOGIC
 # =====================================================
-
 if uploaded_file is not None:
     try:
         df = pd.read_csv(uploaded_file)
-
         st.subheader("Dataset Preview")
-        st.dataframe(df.head())
-        st.write("Shape:", df.shape)
+        st.dataframe(df.head(), use_container_width=True)
 
-        # ==========================================
-        # KEEP ONLY NUMERIC COLUMNS
-        # ==========================================
-        numeric_df = df.select_dtypes(
-            include=[np.number]
-        )
-
-        if numeric_df.empty:
-            st.error("Dataset contains no numeric columns.")
-            st.stop()
-
-        st.subheader("Numeric Features Used")
-        st.write(list(numeric_df.columns))
-
-        # ==========================================
-        # MODEL INPUT SHAPE
-        # ==========================================
-        input_shape = model.input_shape
+        # Prepare Numeric Data
+        numeric_df = df.select_dtypes(include=[np.number])
         
-        st.write("Model Input Shape:", input_shape)
-
-        # Handle variations in model input shape formats (e.g., [None, sequence, features] or list)
-        if isinstance(input_shape, list):
-            actual_shape = input_shape[0]
-        else:
-            actual_shape = input_shape
-
-        sequence_length = actual_shape[1]
-        feature_count = actual_shape[2]
-
-        st.write(f"Sequence Length = {sequence_length}")
-        st.write(f"Expected Features = {feature_count}")
-
-        # ==========================================
-        # VALIDATE FEATURE COUNT
-        # ==========================================
-        if numeric_df.shape[1] != feature_count:
-            st.error(
-                f"Feature mismatch. Model expects {feature_count} features. "
-                f"Uploaded CSV has {numeric_df.shape[1]} numeric features."
-            )
+        if numeric_df.empty:
+            st.error("Dataset contains no numeric columns for prediction.")
             st.stop()
 
-        # ==========================================
-        # CREATE SEQUENCES
-        # ==========================================
-        features = numeric_df.values
+        # Match Model Expectations
+        input_shape = model.input_shape 
+        sequence_length = input_shape[1] if input_shape[1] is not None else 1
+        expected_features = input_shape[2]
+
+        if numeric_df.shape[1] < expected_features:
+            st.error(f"Feature Mismatch: Model needs {expected_features} features, but CSV only has {numeric_df.shape[1]} numeric columns.")
+            st.stop()
+        
+        input_data = numeric_df.iloc[:, :expected_features].values
+
+        if len(input_data) < sequence_length:
+            st.error(f"Data too short. Need at least {sequence_length} rows for this model.")
+            st.stop()
+
         X = []
-
-        for i in range(len(features) - sequence_length):
-            X.append(features[i:i + sequence_length])
-
+        for i in range(len(input_data) - sequence_length + 1):
+            X.append(input_data[i : i + sequence_length])
+        
         X = np.array(X)
 
-        if len(X) == 0:
-            st.error(f"Not enough rows to create sequences. Your file needs more than {sequence_length} rows.")
-            st.stop()
-
-        st.write("Generated Sequences Shape:", X.shape)
-
-        # ==========================================
-        # PREDICTIONS
-        # ==========================================
-        with st.spinner("Running deep learning model predictions..."):
+        # Predictions
+        with st.spinner("Analyzing patterns..."):
             predictions = model.predict(X, verbose=0)
             predictions = predictions.flatten()
 
-        # ==========================================
-        # RESULTS
-        # ==========================================
-        # Align target index dataframe rows with sequence predictions length
-        results = df.iloc[sequence_length:].copy().reset_index(drop=True)
+        # Mapping Results back
+        results = df.iloc[sequence_length - 1 :].copy()
         results["Fraud_Probability"] = predictions
 
         def classify(prob):
-            if prob >= 0.8:
-                return "High Risk"
-            elif prob >= 0.5:
-                return "Medium Risk"
-            else:
-                return "Low Risk"
+            if prob >= 0.8: return "High Risk"
+            elif prob >= 0.5: return "Medium Risk"
+            return "Low Risk"
 
         results["Risk_Level"] = results["Fraud_Probability"].apply(classify)
 
-        # ==========================================
-        # METRICS
-        # ==========================================
-        st.subheader("Fraud Summary")
-        col1, col2, col3 = st.columns(3)
+        # UI Visualizations
+        st.divider()
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Analyzed", len(results))
+        m2.metric("High Risk Found", len(results[results["Risk_Level"] == "High Risk"]))
+        m3.metric("Avg Fraud Score", f"{results['Fraud_Probability'].mean():.4f}")
 
-        col1.metric("Transactions Evaluated", len(results))
-        col2.metric("High Risk Identified", len(results[results["Risk_Level"] == "High Risk"]))
-        col3.metric("Average Fraud Score", f"{results['Fraud_Probability'].mean():.4f}")
-
-        # ==========================================
-        # HIGH RISK
-        # ==========================================
-        st.subheader("🚨 High Risk Transactions")
-        high_risk = results[results["Risk_Level"] == "High Risk"]
+        # Charts
+        c1, c2 = st.columns(2)
         
-        if not high_risk.empty:
-            st.dataframe(high_risk, use_container_width=True)
-        else:
-            st.info("No high risk anomalies detected in this batch.")
+        with c1:
+            st.subheader("Trend Analysis")
+            fig_trend = px.line(results, y="Fraud_Probability", color_discrete_sequence=['#ff4b4b'])
+            st.plotly_chart(fig_trend, use_container_width=True)
+            
+        with c2:
+            st.subheader("Risk Distribution")
+            fig_pie = px.pie(results, names="Risk_Level", hole=0.4,
+                             color="Risk_Level",
+                             color_discrete_map={"Low Risk":"green", "Medium Risk":"orange", "High Risk":"red"})
+            st.plotly_chart(fig_pie, use_container_width=True)
 
-        # ==========================================
-        # PROBABILITY TREND
-        # ==========================================
-        st.subheader("Fraud Probability Trend")
-        fig = px.line(
-            results,
-            y="Fraud_Probability",
-            title="Timeline Fraud Index Score"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        # High Risk Table
+        st.subheader("🚨 Flagged Transactions")
+        st.dataframe(results[results["Risk_Level"] != "Low Risk"].sort_values("Fraud_Probability", ascending=False))
 
-        # ==========================================
-        # RISK DISTRIBUTION
-        # ==========================================
-        st.subheader("Risk Distribution")
-        pie_data = results["Risk_Level"].value_counts().reset_index()
-        pie_data.columns = ["Risk", "Count"]
-
-        pie_fig = px.pie(
-            pie_data,
-            names="Risk",
-            values="Count",
-            color="Risk",
-            color_discrete_map={"High Risk": "red", "Medium Risk": "orange", "Low Risk": "green"}
-        )
-        st.plotly_chart(pie_fig, use_container_width=True)
-
-        # ==========================================
-        # DOWNLOAD
-        # ==========================================
-        csv = results.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="Download Predictions Report CSV",
-            data=csv,
-            file_name="fraud_predictions_report.csv",
-            mime="text/csv"
-        )
+        # Download
+        csv_data = results.to_csv(index=False).encode("utf-8")
+        st.download_button("📩 Download Full Report", csv_data, "analysis_results.csv", "text/csv")
 
     except Exception as e:
-        st.error(f"Processing Error: {e}")
+        st.error(f"An error occurred during processing: {e}")
+        st.exception(e)
 
 else:
-    st.info("Upload a CSV file to start fraud analysis.")
+    st.info("👋 Welcome! Please upload a CSV file to begin.")
